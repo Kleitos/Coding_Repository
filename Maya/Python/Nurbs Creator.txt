@@ -1,0 +1,78 @@
+import maya.cmds as cmds
+
+# Function to execute the desired script when the button is clicked
+def executeFreezeParentChild():
+    selected_objects = cmds.ls(selection=True)
+    
+    if len(selected_objects) == 2:
+        parent_object = selected_objects[0]
+        child_object = selected_objects[1]
+        
+        cmds.parent(child_object, parent_object)
+        cmds.makeIdentity(child_object, apply=True, rotate=True, scale=True, translate=True)
+        cmds.parent(child_object, world=True)
+        
+        print(f"Parent: {parent_object}, Child: {child_object}")
+    else:
+        cmds.warning("Please select exactly two objects.")
+
+# Function to create locator at the pivot point of the selected object
+def createLocatorAtPivot():
+    selected_objects = cmds.ls(selection=True)
+    
+    if len(selected_objects) == 1:
+        object_name = selected_objects[0]
+        
+        # Get the pivot point of the selected object in world space
+        pivot = cmds.xform(object_name, query=True, worldSpace=True, rotatePivot=True)
+        
+        # Create a locator with the name prefixed by "loc_"
+        locator_name = "loc_" + object_name
+        locator = cmds.spaceLocator(p=(0, 0, 0), name=locator_name)[0]
+        cmds.xform(locator, worldSpace=True, translation=pivot)
+        cmds.makeIdentity(locator, apply=True, rotate=True, scale=True, translate=True)
+        
+        print(f"Locator created at pivot point: {pivot}")
+        print(f"Locator name: {locator}")
+    else:
+        cmds.warning("Please select exactly one object.")
+
+# Function to create a NURBS circle at the pivot point of the selected object
+def createNurbsCircleAtPivot():
+    selected_objects = cmds.ls(selection=True)
+    
+    if len(selected_objects) == 1:
+        object_name = selected_objects[0]
+        
+        # Get the pivot point of the selected object in world space
+        pivot = cmds.xform(object_name, query=True, worldSpace=True, rotatePivot=True)
+        
+        # Create a NURBS circle and rename it with "ctrl_" prefix
+        nurbs_circle_name = "ctrl_" + object_name
+        nurbs_circle = cmds.circle(normal=[0, 1, 0], radius=1, name=nurbs_circle_name)[0]
+        cmds.xform(nurbs_circle, worldSpace=True, translation=pivot)
+        cmds.makeIdentity(nurbs_circle, apply=True, rotate=True, scale=True, translate=True)
+        
+        print(f"NURBS Circle created at pivot point: {pivot}")
+        print(f"NURBS Circle name: {nurbs_circle}")
+    else:
+        cmds.warning("Please select exactly one object.")
+
+# Check if the window already exists and delete if it does
+if cmds.window("combinedToolWindow", exists=True):
+    cmds.deleteUI("combinedToolWindow")
+
+# Create the UI for the tool
+combined_tool_window = cmds.window("combinedToolWindow", title="Tool Window", widthHeight=(200, 250))
+cmds.columnLayout(adjustableColumn=True)
+
+cmds.button(label="Create Locator at Pivot", command=lambda x: createLocatorAtPivot())
+cmds.separator(height=30)
+
+cmds.button(label="Create NURBS Circle at Pivot", command=lambda x: createNurbsCircleAtPivot())
+cmds.separator(height=60)
+
+cmds.button(label="Freeze & Orient", command=lambda x: executeFreezeParentChild())
+
+cmds.showWindow(combined_tool_window)
+ 

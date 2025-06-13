@@ -1,0 +1,220 @@
+import maya.cmds as mc
+
+def sort_by_hierarchy_depth(objects):
+    return sorted(objects, key=lambda obj: obj.count('|'), reverse=True)
+
+def rename_base(objects, base_name, numbering=False, start_number=1, padding=2, smart_numbering=False):
+    renamed = []
+    sorted_objs = sort_by_hierarchy_depth(objects)
+    existing_names = set(mc.ls())
+
+    current_number = start_number
+    for obj in sorted_objs:
+        name = base_name
+        if numbering:
+            while True:
+                number = str(current_number).zfill(padding)
+                candidate = f"{name}_{number}"
+                if not smart_numbering or candidate not in existing_names:
+                    break
+                current_number += 1
+            name = candidate
+            current_number += 1
+        renamed.append(mc.rename(obj, name))
+        existing_names.add(name)
+    return renamed
+
+def search_and_replace(objects, search_text, replace_text):
+    renamed = []
+    sorted_objs = sort_by_hierarchy_depth(objects)
+    for obj in sorted_objs:
+        short_name = obj.split('|')[-1]
+        if search_text in short_name:
+            new_short_name = short_name.replace(search_text, replace_text)
+            renamed.append(mc.rename(obj, new_short_name))
+    return renamed
+
+def add_prefix(objects, prefix):
+    renamed = []
+    sorted_objs = sort_by_hierarchy_depth(objects)
+    for obj in sorted_objs:
+        short_name = obj.split('|')[-1]
+        new_short_name = f"{prefix}{short_name}"
+        renamed.append(mc.rename(obj, new_short_name))
+    return renamed
+
+def add_suffix(objects, suffix):
+    renamed = []
+    sorted_objs = sort_by_hierarchy_depth(objects)
+    for obj in sorted_objs:
+        short_name = obj.split('|')[-1]
+        new_short_name = f"{short_name}{suffix}"
+        renamed.append(mc.rename(obj, new_short_name))
+    return renamed
+
+def combined_rename(objects, prefix="", base_name="", suffix="", numbering=False, start_number=1, padding=2, smart_numbering=False):
+    renamed = []
+    sorted_objs = sort_by_hierarchy_depth(objects)
+    existing_names = set(mc.ls())
+
+    current_number = start_number
+    for obj in sorted_objs:
+        base = f"{prefix}{base_name}"
+        if numbering:
+            while True:
+                number = str(current_number).zfill(padding)
+                candidate = f"{base}_{number}{suffix}"
+                if not smart_numbering or candidate not in existing_names:
+                    break
+                current_number += 1
+            name = candidate
+            current_number += 1
+        else:
+            name = f"{base}{suffix}"
+        renamed.append(mc.rename(obj, name))
+        existing_names.add(name)
+    return renamed
+
+def open_modular_renamer():
+    # Destroy old control if it exists
+    if mc.workspaceControl("modularRenamerWC", exists=True):
+        mc.deleteUI("modularRenamerWC", control=True)
+
+    # Create the dockable workspaceControl
+    mc.workspaceControl("modularRenamerWC", label="Modular Renamer", retain=False, width=300)
+    mc.setParent("modularRenamerWC")
+    mc.columnLayout(adjustableColumn=True, rowSpacing=8)
+
+    # Smart Numbering (shared across sections)
+    smart_numbering_check = mc.checkBox(label="Smart Numbering", value=True)
+
+    # --- Frame: Base Rename ---
+    mc.frameLayout(label="Base Rename with Numbering", collapsable=True, collapse=False)
+    mc.columnLayout(adjustableColumn=True)
+
+    base_field = mc.textField(placeholderText="Base Name")
+    numbering_check = mc.checkBox(label="Add Numbering", value=True)
+    start_field = mc.intField(value=1)
+    padding_field = mc.intField(value=2)
+
+    def on_rename_base(*_):
+        selected = mc.ls(selection=True, long=True)
+        if not selected:
+            mc.warning("No selection.")
+            return
+        base = mc.textField(base_field, q=True, text=True)
+        if not base:
+            mc.warning("Base name cannot be empty.")
+            return
+        renamed = rename_base(
+            selected,
+            base,
+            numbering=mc.checkBox(numbering_check, q=True, value=True),
+            start_number=mc.intField(start_field, q=True, value=True),
+            padding=mc.intField(padding_field, q=True, value=True),
+            smart_numbering=mc.checkBox(smart_numbering_check, q=True, value=True)
+        )
+        print("Renamed:", renamed)
+
+    mc.button(label="Rename Base", command=on_rename_base)
+    mc.setParent("..")  # column
+    mc.setParent("..")  # frame
+
+    # --- Frame: Combined Rename ---
+    mc.frameLayout(label="Combined Rename (Prefix + Base + Number + Suffix)", collapsable=True, collapse=True)
+    mc.columnLayout(adjustableColumn=True)
+
+    combined_prefix_field = mc.textField(placeholderText="Prefix")
+    combined_base_field = mc.textField(placeholderText="Base Name")
+    combined_suffix_field = mc.textField(placeholderText="Suffix")
+    combined_numbering_check = mc.checkBox(label="Add Numbering", value=True)
+    combined_start_field = mc.intField(value=1)
+    combined_padding_field = mc.intField(value=2)
+
+    def on_combined_rename(*_):
+        selected = mc.ls(selection=True, long=True)
+        if not selected:
+            mc.warning("No selection.")
+            return
+        base = mc.textField(combined_base_field, q=True, text=True)
+        if not base:
+            mc.warning("Base name cannot be empty.")
+            return
+        renamed = combined_rename(
+            selected,
+            prefix=mc.textField(combined_prefix_field, q=True, text=True),
+            base_name=base,
+            suffix=mc.textField(combined_suffix_field, q=True, text=True),
+            numbering=mc.checkBox(combined_numbering_check, q=True, value=True),
+            start_number=mc.intField(combined_start_field, q=True, value=True),
+            padding=mc.intField(combined_padding_field, q=True, value=True),
+            smart_numbering=mc.checkBox(smart_numbering_check, q=True, value=True)
+        )
+        print("Combined Rename:", renamed)
+
+    mc.button(label="Apply Combined Rename", command=on_combined_rename)
+    mc.setParent("..")  # column
+    mc.setParent("..")  # frame
+
+    # --- Frame: Search and Replace ---
+    mc.frameLayout(label="Search and Replace", collapsable=True, collapse=True)
+    mc.columnLayout(adjustableColumn=True)
+
+    search_field = mc.textField(placeholderText="Search")
+    replace_field = mc.textField(placeholderText="Replace")
+
+    def on_search_replace(*_):
+        selected = mc.ls(selection=True, long=True)
+        if not selected:
+            mc.warning("No selection.")
+            return
+        search = mc.textField(search_field, q=True, text=True)
+        if not search:
+            mc.warning("Search field cannot be empty.")
+            return
+        renamed = search_and_replace(selected, search, mc.textField(replace_field, q=True, text=True))
+        print("Search & Replace:", renamed)
+
+    mc.button(label="Replace", command=on_search_replace)
+    mc.setParent("..")  # column
+    mc.setParent("..")  # frame
+
+    # --- Frame: Add Prefix/Suffix ---
+    mc.frameLayout(label="Prefix & Suffix", collapsable=True, collapse=True)
+    mc.columnLayout(adjustableColumn=True)
+
+    prefix_field = mc.textField(placeholderText="Prefix")
+    suffix_field = mc.textField(placeholderText="Suffix")
+
+    def on_add_prefix(*_):
+        selected = mc.ls(selection=True, long=True)
+        if not selected:
+            mc.warning("No selection.")
+            return
+        prefix = mc.textField(prefix_field, q=True, text=True)
+        if not prefix:
+            mc.warning("Prefix cannot be empty.")
+            return
+        renamed = add_prefix(selected, prefix)
+        print("Prefix Added:", renamed)
+
+    def on_add_suffix(*_):
+        selected = mc.ls(selection=True, long=True)
+        if not selected:
+            mc.warning("No selection.")
+            return
+        suffix = mc.textField(suffix_field, q=True, text=True)
+        if not suffix:
+            mc.warning("Suffix cannot be empty.")
+            return
+        renamed = add_suffix(selected, suffix)
+        print("Suffix Added:", renamed)
+
+    mc.button(label="Add Prefix", command=on_add_prefix)
+    mc.button(label="Add Suffix", command=on_add_suffix)
+
+    mc.setParent("..")  # column
+    mc.setParent("..")  # frame
+
+# Run this to open the docked tool
+open_modular_renamer()

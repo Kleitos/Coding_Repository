@@ -1,0 +1,69 @@
+import maya.cmds as mc
+
+def combine_shapes_with_ui():
+    if mc.window("combineShapesWin", exists=True):
+        mc.deleteUI("combineShapesWin")
+
+    mc.window("combineShapesWin", title="Combine Shapes", widthHeight=(300, 130))
+    mc.columnLayout(adjustableColumn=True, rowSpacing=10, columnAlign='center')
+
+    # Text field for name input
+    mc.text(label="Enter name for combined control:")
+    name_field = mc.textField(placeholderText="e.g., myCtrl or leave blank for default")
+
+    # Checkbox to keep originals
+    keep_original_checkbox = mc.checkBox(label="Keep original curves", value=False)
+
+    def on_combine(*args):
+        user_input = mc.textField(name_field, query=True, text=True).strip()
+        keep_original = mc.checkBox(keep_original_checkbox, query=True, value=True)
+
+        # Default name and auto-increment
+        base_name = user_input if user_input else "newCombinedCtl"
+        final_name = base_name
+        suffix = 1
+        while mc.objExists(final_name):
+            final_name = f"{base_name}_{suffix}"
+            suffix += 1
+
+        # Get selection and validate
+        selected = mc.ls(selection=True)
+        if not selected:
+            mc.warning("Please select at least one curve.")
+            return
+
+        # Duplicate selection if keeping original
+        if keep_original:
+            working_curves = mc.duplicate(selected, renameChildren=True)
+        else:
+            working_curves = list(selected)  # Use original selection
+
+        # Freeze transforms on working curves
+        mc.makeIdentity(working_curves, apply=True, t=True, r=True, s=True)
+
+        # Get shape nodes from working curves
+        shape_nodes = mc.listRelatives(working_curves, shapes=True, fullPath=True)
+        if not shape_nodes:
+            mc.warning("No shape nodes found.")
+            return
+
+        # Create group for combined shapes
+        combined_group = mc.group(empty=True, name=final_name)
+
+        # Parent shape nodes to new group
+        mc.parent(shape_nodes, combined_group, shape=True, relative=True)
+
+        # Clean up unused transforms (the ones holding the shapes)
+        mc.delete(working_curves)
+
+        mc.confirmDialog(title="Success", message=f"Combined control created: {combined_group}", button=["OK"], defaultButton="OK")
+
+        mc.deleteUI("combineShapesWin")
+
+    mc.button(label="Combine Shapes", command=on_combine)
+    mc.button(label="Cancel", command=lambda *_: mc.deleteUI("combineShapesWin"))
+
+    mc.showWindow("combineShapesWin")
+
+# Show the UI
+combine_shapes_with_ui()

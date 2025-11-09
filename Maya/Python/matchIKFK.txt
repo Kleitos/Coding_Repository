@@ -1,0 +1,433 @@
+# IK-FK Matcher — Single-limb UI (PySide compatible shim included)
+# Works with Maya versions shipping PySide2 (Qt5) or PySide6 (Qt6).
+
+# ------------------ Qt compatibility shim ------------------
+try:
+    # Maya 2025+ likely ships PySide6
+    from PySide6 import QtWidgets, QtCore, QtGui
+    IS_PYSIDE6 = True
+except Exception:
+    # Fallback to PySide2 on older Maya
+    from PySide2 import QtWidgets, QtCore, QtGui
+    IS_PYSIDE6 = False
+
+# Tiny helpers for small API differences
+def qAlignCenter():
+    """Return a Qt alignment center flag that works across PySide2 / PySide6."""
+    return QtCore.Qt.AlignCenter
+
+def qt_exec(app):
+    """Call application's exec depending on binding (rarely needed in maya)."""
+    if IS_PYSIDE6:
+        return app.exec()
+    else:
+        return app.exec_()
+
+# ------------------ Maya / utility functions ------------------
+import maya.cmds as cmds
+from functools import partial
+
+def _resolve_to_unique(name):
+    if not name:
+        return None
+    if '|' in name:
+        if cmds.objExists(name):
+            return name
+    candidates = cmds.ls(name, long=True) or []
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    # choose the candidate with the fewest '|' (shortest DAG path)
+    return min(candidates, key=lambda s: s.count('|'))
+
+def _is_transform(node):
+    if not node:
+        return False
+    resolved = _resolve_to_unique(node)
+    if not resolved:
+        return False
+    return cmds.attributeQuery('translateX', node=resolved, exists=True)
+
+def _pairs_share_name_token(fk_name, ik_name):
+    ignore_tokens = {'l', 'r', 'left', 'right', 'joint', 'ctrl', '', 'jnt'}
+    fk_tokens = set(t.lower() for t in fk_name.split('_') if t.lower() not in ignore_tokens)
+    ik_tokens = set(t.lower() for t in ik_name.split('_') if t.lower() not in ignore_tokens)
+    return bool(fk_tokens & ik_tokens)
+
+def _short_name_from_selection():
+    sel = cmds.ls(selection=True, long=True)
+    if not sel:
+        return None
+    return sel[0].split('|')[-1]
+
+# ------------------ UI class ------------------
+class IKFKMatcherUI(QtWidgets.QWidget):
+    def __init__(self):
+        super(IKFKMatcherUI, self).__init__()
+        self.setWindowTitle("IK ↔ FK Matcher — Single Limb")
+        self.setMinimumWidth(700)
+        self.joint_names = ["Shoulder", "Elbow", "Wrist"]
+        self.fk_ctrl_names = ["Shoulder", "Elbow", "Wrist"]
+        self._build_ui()
+
+    def _build_ui(self):
+        main = QtWidgets.QVBoxLayout()
+        self.setLayout(main)
+        main.addWidget(QtWidgets.QLabel("IK ↔ FK Matcher — Single limb (Shoulder / Elbow / Wrist)"))
+
+        # --- Joint pairs (fixed 3) ---
+        joints_box = QtWidgets.QGroupBox("Joint Pairs (IK <-> FK)")
+        jb_layout = QtWidgets.QGridLayout()
+        jb_layout.setColumnStretch(1, 1)
+        jb_layout.setColumnStretch(5, 1)
+        joints_box.setLayout(jb_layout)
+        jb_layout.addWidget(QtWidgets.QLabel("<b>IK Joint</b>"), 0, 0, qAlignCenter())
+        jb_layout.addWidget(QtWidgets.QLabel("<b>FK Joint</b>"), 0, 4, qAlignCenter())
+
+        self.joint_fields = []
+        for i, name in enumerate(self.joint_names):
+            row = i + 1
+            ik_field = QtWidgets.QLineEdit()
+            ik_pick = QtWidgets.QPushButton("Pick")
+            ik_pick.clicked.connect(partial(self._pick_to_field, ik_field))
+            jb_layout.addWidget(QtWidgets.QLabel(name), row, 0)
+            jb_layout.addWidget(ik_field, row, 1)
+            jb_layout.addWidget(ik_pick, row, 2)
+
+            swap_btn = QtWidgets.QPushButton("Swap")
+            jb_layout.addWidget(swap_btn, row, 3)
+
+            fk_field = QtWidgets.QLineEdit()
+            fk_pick = QtWidgets.QPushButton("Pick")
+            fk_pick.clicked.connect(partial(self._pick_to_field, fk_field))
+            jb_layout.addWidget(QtWidgets.QLabel(name), row, 4)
+            jb_layout.addWidget(fk_field, row, 5)
+            jb_layout.addWidget(fk_pick, row, 6)
+
+            swap_btn.clicked.connect(partial(self._swap_fields, ik_field, fk_field))
+            self.joint_fields.append((ik_field, fk_field))
+
+        main.addWidget(joints_box)
+
+        # --- Controllers area ---
+        ctrl_box = QtWidgets.QGroupBox("Controllers")
+        cb_layout = QtWidgets.QGridLayout()
+        ctrl_box.setLayout(cb_layout)
+        cb_layout.addWidget(QtWidgets.QLabel("<b>IK Controllers</b>"), 0, 0)
+        cb_layout.addWidget(QtWidgets.QLabel("<b>FK Controllers</b>"), 0, 3)
+
+        # IK controllers: Arm, Pole Vector, Elbow Locator
+        self.ik_ctrl_fields = []
+        ik_labels = ["Arm", "Pole Vector", "Elbow Locator"]
+        for i, label in enumerate(ik_labels):
+            r = i + 1
+            lbl = QtWidgets.QLabel(label)
+            fld = QtWidgets.QLineEdit()
+            pick = QtWidgets.QPushButton("Pick")
+            pick.clicked.connect(partial(self._pick_to_field, fld))
+            cb_layout.addWidget(lbl, r, 0)
+            cb_layout.addWidget(fld, r, 1)
+            cb_layout.addWidget(pick, r, 2)
+            self.ik_ctrl_fields.append(fld)
+
+        # FK controllers: Shoulder, Elbow, Wrist
+        self.fk_ctrl_fields = []
+        for i, label in enumerate(self.fk_ctrl_names):
+            r = i + 1
+            lbl = QtWidgets.QLabel(label)
+            fld = QtWidgets.QLineEdit()
+            pick = QtWidgets.QPushButton("Pick")
+            pick.clicked.connect(partial(self._pick_to_field, fld))
+            cb_layout.addWidget(lbl, r, 3)
+            cb_layout.addWidget(fld, r, 4)
+            cb_layout.addWidget(pick, r, 5)
+            self.fk_ctrl_fields.append(fld)
+
+        # Create Elbow Locator button
+        create_loc_btn = QtWidgets.QPushButton("Create Elbow Locator")
+        create_loc_btn.clicked.connect(self.create_elbow_locator)
+        cb_layout.addWidget(create_loc_btn, len(ik_labels) + 1, 0, 1, 2)
+
+        main.addWidget(ctrl_box)
+
+        # --- Bottom buttons ---
+        bottom = QtWidgets.QHBoxLayout()
+        bottom.addStretch(1)
+        validate_btn = QtWidgets.QPushButton("Validate Joint Pairs")
+        validate_btn.clicked.connect(self.validate_pairs)
+        match_fk_btn = QtWidgets.QPushButton("Match FK → IK")
+        match_fk_btn.clicked.connect(self.match_fk_to_ik)
+        match_ik_btn = QtWidgets.QPushButton("Match IK → FK")
+        match_ik_btn.clicked.connect(self.match_ik_to_fk)
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        bottom.addWidget(validate_btn)
+        bottom.addWidget(match_fk_btn)
+        bottom.addWidget(match_ik_btn)
+        bottom.addWidget(close_btn)
+        main.addLayout(bottom)
+
+    # ---------- UI helpers ----------
+    def _pick_to_field(self, field):
+        short = _short_name_from_selection()
+        if short:
+            field.setText(short)
+        else:
+            cmds.confirmDialog(title='Pick Error', message='Nothing selected.', button=['OK'])
+
+    def _swap_fields(self, a_field, b_field):
+        a = a_field.text()
+        b = b_field.text()
+        a_field.setText(b)
+        b_field.setText(a)
+
+    # ---------- Create locator ----------
+    def create_elbow_locator(self):
+        """
+        Create a locator at the Pole Vector controller's visual position using
+        the controller's world rotate pivot (rp) and world rotation (ro),
+        then parent the locator under the FK Elbow joint and populate the locator field.
+        """
+        pv_name = self.ik_ctrl_fields[1].text().strip()
+        if not pv_name:
+            cmds.confirmDialog(title='Create Locator', message='Pole Vector controller not defined. Pick it first.', button=['OK'])
+            return
+
+        resolved_pv = _resolve_to_unique(pv_name)
+        if not resolved_pv:
+            cmds.confirmDialog(title='Create Locator', message=f'Pole Vector "{pv_name}" not found.', button=['OK'])
+            return
+
+        fk_elbow_name = self.joint_fields[1][1].text().strip()
+        if not fk_elbow_name:
+            cmds.confirmDialog(title='Create Locator', message='FK Elbow joint not defined in joint pairs.', button=['OK'])
+            return
+
+        resolved_fk_elbow = _resolve_to_unique(fk_elbow_name)
+        if not resolved_fk_elbow:
+            cmds.confirmDialog(title='Create Locator', message=f'FK Elbow joint "{fk_elbow_name}" not found.', button=['OK'])
+            return
+
+        try:
+            world_pos = cmds.xform(resolved_pv, q=True, ws=True, rp=True)
+        except Exception:
+            world_pos = cmds.xform(resolved_pv, q=True, ws=True, t=True)
+
+        try:
+            world_rot = cmds.xform(resolved_pv, q=True, ws=True, ro=True)
+        except Exception:
+            world_rot = [0.0, 0.0, 0.0]
+
+        # Create unique locator
+        base_name = 'elbow_orientation'
+        unique_name = base_name
+        i = 1
+        while cmds.objExists(unique_name):
+            unique_name = f"{base_name}_{i}"
+            i += 1
+        loc = cmds.spaceLocator(name=unique_name)[0]
+
+        cmds.xform(loc, ws=True, t=world_pos)
+        cmds.xform(loc, ws=True, ro=world_rot)
+
+        try:
+            cmds.parent(loc, resolved_fk_elbow)
+        except Exception:
+            cmds.confirmDialog(title='Create Locator', message=f'Created locator "{loc}" but failed to parent to "{resolved_fk_elbow}".', button=['OK'])
+            short = loc.split('|')[-1]
+            self.ik_ctrl_fields[2].setText(short)
+            return
+
+        short = loc.split('|')[-1]
+        self.ik_ctrl_fields[2].setText(short)
+        cmds.confirmDialog(title='Create Locator', message=f'Created locator "{short}" parented under "{resolved_fk_elbow}".', button=['OK'])
+
+    # ---------- Validation ----------
+    def validate_pairs(self):
+        pairs = [(ik.text().strip(), fk.text().strip()) for ik, fk in self.joint_fields]
+        if all(not (fk or ik) for ik, fk in pairs):
+            cmds.confirmDialog(title='Validation Errors', message='No joint pairs defined.', button=['OK'])
+            return
+
+        msg_lines = []
+        all_ok = True
+        fk_used = set()
+        ik_used = set()
+
+        for i, (ik, fk) in enumerate(pairs):
+            fk_ok = bool(fk) and _is_transform(fk)
+            ik_ok = bool(ik) and _is_transform(ik)
+            name_ok = _pairs_share_name_token(fk, ik)
+            swapped = False
+            if fk_ok and ik_ok and ('_IK' in fk.upper() or '_FK' in ik.upper()):
+                swapped = True
+            duplicate_fk = fk in fk_used and fk != ''
+            duplicate_ik = ik in ik_used and ik != ''
+            fk_used.add(fk)
+            ik_used.add(ik)
+
+            if not fk_ok or not ik_ok:
+                all_ok = False
+                msg_lines.append(f'Pair {i+1} ({self.joint_names[i]}): FK="{fk}" or IK="{ik}" missing or not a transform.')
+            elif not name_ok:
+                all_ok = False
+                msg_lines.append(f'Pair {i+1} ({self.joint_names[i]}): FK="{fk}" and IK="{ik}" do not share a meaningful token.')
+            elif swapped:
+                all_ok = False
+                msg_lines.append(f'Pair {i+1} ({self.joint_names[i]}): FK and IK may be swapped (check _FK/_IK).')
+            elif duplicate_fk or duplicate_ik:
+                all_ok = False
+                msg_lines.append(f'Pair {i+1} ({self.joint_names[i]}): FK="{fk}" or IK="{ik}" used in another pair.')
+
+        if all_ok:
+            cmds.confirmDialog(title='Validation', message='All IK/FK joint pairs valid.', button=['OK'])
+        else:
+            cmds.confirmDialog(title='Validation Errors', message='\n'.join(msg_lines), button=['OK'])
+
+    # ---------- Match FK -> IK ----------
+    def match_fk_to_ik(self):
+        pairs = [(ik.text().strip(), fk.text().strip()) for ik, fk in self.joint_fields]
+        fk_ctrls = [f.text().strip() for f in self.fk_ctrl_fields]
+        missing_ctrls = [i for i, c in enumerate(fk_ctrls) if not c]
+
+        if missing_ctrls:
+            names = ", ".join(self.fk_ctrl_names[i] for i in missing_ctrls)
+            cmds.confirmDialog(title='Match Error', message=f'Missing FK controller(s): {names}', button=['OK'])
+            return
+
+        ambiguous_warnings = []
+        errors = []
+
+        cmds.undoInfo(openChunk=True)
+        try:
+            for idx, ((ik_joint, fk_joint), fk_ctrl) in enumerate(zip(pairs, fk_ctrls)):
+                resolved_ik = _resolve_to_unique(ik_joint)
+                resolved_fk_ctrl = _resolve_to_unique(fk_ctrl)
+
+                for name, resolved in [(ik_joint, resolved_ik), (fk_ctrl, resolved_fk_ctrl)]:
+                    if name and '|' not in name:
+                        cand = cmds.ls(name, long=True) or []
+                        if len(cand) > 1:
+                            if resolved:
+                                ambiguous_warnings.append(f'"{name}" resolved to "{resolved}".')
+                            else:
+                                ambiguous_warnings.append(f'"{name}" has multiple matches but none resolved.')
+
+                if not resolved_ik or not resolved_fk_ctrl:
+                    errors.append(f'Pair {idx+1} ({self.joint_names[idx]}): missing IK joint or FK controller.')
+                    continue
+                if not _is_transform(resolved_ik):
+                    errors.append(f'Pair {idx+1} ({self.joint_names[idx]}): IK joint "{resolved_ik}" not a transform.')
+                    continue
+                if not _is_transform(resolved_fk_ctrl):
+                    errors.append(f'Pair {idx+1} ({self.joint_names[idx]}): FK controller "{resolved_fk_ctrl}" not a transform.')
+                    continue
+
+                # Only copy rotation (world space)
+                rot = cmds.xform(resolved_ik, q=True, ws=True, ro=True)
+                cmds.xform(resolved_fk_ctrl, ws=True, ro=rot)
+
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
+        if ambiguous_warnings:
+            uniq = list(dict.fromkeys(ambiguous_warnings))
+            cmds.confirmDialog(title='Ambiguous names resolved', message='\n'.join(uniq), button=['OK'])
+        if errors:
+            cmds.confirmDialog(title='Match FK→IK Completed (with errors)', message='\n'.join(errors), button=['OK'])
+        else:
+            cmds.confirmDialog(title='Match FK→IK', message='Successfully matched FK controllers to IK joints.', button=['OK'])
+
+    # ---------- Match IK -> FK ----------
+    def match_ik_to_fk(self):
+        """
+        Match IK -> FK using translation-only matching:
+         - pointConstraint FK_wrist -> IK Arm controller (match translation only)
+         - pointConstraint elbow_locator -> Pole Vector controller (match translation only)
+        """
+        ik_arm = self.ik_ctrl_fields[0].text().strip()
+        ik_pv = self.ik_ctrl_fields[1].text().strip()
+        elbow_locator = self.ik_ctrl_fields[2].text().strip()
+        fk_wrist = self.joint_fields[2][1].text().strip()
+
+        errors = []
+        ambiguous = []
+
+        # resolve names (short names allowed)
+        resolved_ik_arm = _resolve_to_unique(ik_arm)
+        resolved_pv = _resolve_to_unique(ik_pv) if ik_pv else None
+        resolved_elbow_loc = _resolve_to_unique(elbow_locator) if elbow_locator else None
+        resolved_fk_wrist = _resolve_to_unique(fk_wrist)
+
+        # basic checks
+        if not resolved_ik_arm or not resolved_fk_wrist:
+            errors.append('IK Arm or FK Wrist not defined/found.')
+        if not resolved_pv or not resolved_elbow_loc:
+            errors.append('Pole Vector or Elbow Locator not defined/found.')
+
+        if errors:
+            cmds.confirmDialog(title='Match IK→FK Completed (with errors)', message='\n'.join(errors), button=['OK'])
+            return
+
+        cmds.undoInfo(openChunk=True)
+        try:
+            # --- Match translation: FK Wrist -> IK Arm controller (pointConstraint)
+            try:
+                temp_pc = cmds.pointConstraint(resolved_fk_wrist, resolved_ik_arm, mo=False)
+                if temp_pc:
+                    cmds.delete(temp_pc)
+            except Exception as e:
+                # fallback: try direct xform copy of translation
+                try:
+                    pos = cmds.xform(resolved_fk_wrist, q=True, ws=True, t=True)
+                    cmds.xform(resolved_ik_arm, ws=True, t=pos)
+                except Exception:
+                    errors.append(f'Failed to move IK Arm controller "{ik_arm}" to FK Wrist "{fk_wrist}": {e}')
+
+            # --- Match translation: Elbow Locator -> Pole Vector controller (pointConstraint)
+            try:
+                temp_pc2 = cmds.pointConstraint(resolved_elbow_loc, resolved_pv, mo=False)
+                if temp_pc2:
+                    cmds.delete(temp_pc2)
+            except Exception as e:
+                # fallback: direct xform copy of translation
+                try:
+                    pos2 = cmds.xform(resolved_elbow_loc, q=True, ws=True, t=True)
+                    cmds.xform(resolved_pv, ws=True, t=pos2)
+                except Exception:
+                    errors.append(f'Failed to move Pole Vector "{ik_pv}" to Elbow Locator "{elbow_locator}": {e}')
+
+            # collect ambiguous name info (non-fatal)
+            for name in (ik_arm, ik_pv, elbow_locator, fk_wrist):
+                if name and '|' not in name:
+                    cand = cmds.ls(name, long=True) or []
+                    if len(cand) > 1:
+                        chosen = _resolve_to_unique(name)
+                        ambiguous.append(f'"{name}" resolved to "{chosen}".')
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
+        if ambiguous:
+            uniq = list(dict.fromkeys(ambiguous))
+            cmds.confirmDialog(title='Ambiguous names resolved', message='\n'.join(uniq), button=['OK'])
+
+        if errors:
+            cmds.confirmDialog(title='Match IK→FK Completed (with errors)', message='\n'.join(errors), button=['OK'])
+        else:
+            cmds.confirmDialog(title='Match IK→FK', message='Successfully matched IK controllers (translation only) to FK pose.', button=['OK'])
+
+# ------------------ Launch ------------------
+def show_ui():
+    global _IKFK_UI_INSTANCE
+    try:
+        _IKFK_UI_INSTANCE.close()
+        _IKFK_UI_INSTANCE.deleteLater()
+    except Exception:
+        pass
+    _IKFK_UI_INSTANCE = IKFKMatcherUI()
+    _IKFK_UI_INSTANCE.show()
+
+# Run:
+if __name__ == '__main__':
+    show_ui()

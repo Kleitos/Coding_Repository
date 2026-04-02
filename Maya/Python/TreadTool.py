@@ -52,7 +52,7 @@ def _disable_parametric_length_on_node(mp_node):
     if not cmds.objExists(attr):
         return False
     try:
-        # Maya bug: 1 = OFF, 0 = ON
+        # Maya Motion Path Boolean logic : 1 = OFF, 0 = ON
         cmds.setAttr(attr, 1)
         logger.info(f"Set {mp_node}.fractionMode = 1 (Parametric Length OFF)")
         return True
